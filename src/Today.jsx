@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { supabase } from './supabase'
+import { api } from './api'
 
 export default function Today() {
   const [selectedDate, setSelectedDate] = useState(new Date())
@@ -26,18 +26,13 @@ export default function Today() {
   const fetchTodayData = async () => {
     setLoading(true)
     
-    // Fetch categories, unarchived habits, and logs for the selected date
-    const [catRes, habRes, logRes] = await Promise.all([
-      supabase.from('categories').select('*').order('sort_order'),
-      supabase.from('habits').select('*').eq('archived', false).order('sort_order'),
-      supabase.from('logs').select('*').eq('log_date', dateString)
+    const [cats, habs, logs] = await Promise.all([
+      api('getCategories'),
+      api('getHabits', { archived: false }),
+      api('getLogsByDate', { date: dateString })
     ])
 
-    const cats = catRes.data || []
-    const habs = habRes.data || []
-    const logs = logRes.data || []
-
-    setData({ categories: cats, habits: habs, logs })
+    setData({ categories: cats || [], habits: habs || [], logs: logs || [] })
 
     // Initialize numeric inputs state
     const inputs = {}
@@ -66,17 +61,17 @@ export default function Today() {
     if (isLogged) {
       newLogs = newLogs.filter(l => l.id !== currentLog.id)
       setData(prev => ({ ...prev, logs: newLogs }))
-      await supabase.from('logs').delete().eq('id', currentLog.id)
+      await api('deleteLog', { id: currentLog.id })
     } else {
       const tempLog = { id: 'temp', habit_id: habitId, log_date: dateString, value: 1 }
       newLogs.push(tempLog)
       setData(prev => ({ ...prev, logs: newLogs }))
       
-      const { data: inserted } = await supabase.from('logs').insert([{
+      const inserted = await api('addLog', {
         habit_id: habitId,
         log_date: dateString,
         value: 1
-      }]).select().single()
+      })
       
       if (inserted) {
         setData(prev => ({
@@ -96,7 +91,7 @@ export default function Today() {
       if (currentLog) {
         const newLogs = data.logs.filter(l => l.id !== currentLog.id)
         setData(prev => ({ ...prev, logs: newLogs }))
-        await supabase.from('logs').delete().eq('id', currentLog.id)
+        await api('deleteLog', { id: currentLog.id })
       }
       return
     }
@@ -106,18 +101,18 @@ export default function Today() {
       // Update
       const newLogs = data.logs.map(l => l.id === currentLog.id ? { ...l, value: val } : l)
       setData(prev => ({ ...prev, logs: newLogs }))
-      await supabase.from('logs').update({ value: val }).eq('id', currentLog.id)
+      await api('updateLog', { id: currentLog.id, value: val })
     } else {
       // Insert
       const tempLog = { id: 'temp', habit_id: habitId, log_date: dateString, value: val }
       const newLogs = [...data.logs, tempLog]
       setData(prev => ({ ...prev, logs: newLogs }))
       
-      const { data: inserted } = await supabase.from('logs').insert([{
+      const inserted = await api('addLog', {
         habit_id: habitId,
         log_date: dateString,
         value: val
-      }]).select().single()
+      })
       
       if (inserted) {
         setData(prev => ({

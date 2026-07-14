@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { supabase } from './supabase'
+import { api } from './api'
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, YAxis } from 'recharts'
 
 export default function Trends() {
@@ -26,16 +26,16 @@ export default function Trends() {
     const endStr = getLocalDateString(endDate)
     const startStr = getLocalDateString(startDate)
 
-    const [catRes, habRes, logRes] = await Promise.all([
-      supabase.from('categories').select('*').order('sort_order'),
-      supabase.from('habits').select('*').eq('archived', false).order('sort_order'),
-      supabase.from('logs').select('*').gte('log_date', startStr).lte('log_date', endStr)
+    const [cats, habs, logs] = await Promise.all([
+      api('getCategories'),
+      api('getHabits', { archived: false }),
+      api('getLogsByDateRange', { startStr, endStr })
     ])
 
     setData({
-      categories: catRes.data || [],
-      habits: habRes.data || [],
-      logs: logRes.data || []
+      categories: cats || [],
+      habits: habs || [],
+      logs: logs || []
     })
     
     setLoading(false)

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { supabase } from './supabase'
+import { api } from './api'
 
 const COLORS = ['#A9667C', '#3F5E4E', '#B8823C', '#4E5F70', '#99684C', '#564654']
 
@@ -22,15 +22,15 @@ export default function Manage() {
 
   const fetchData = async () => {
     setLoading(true)
-    const [catRes, habRes] = await Promise.all([
-      supabase.from('categories').select('*').order('sort_order'),
-      supabase.from('habits').select('*').order('sort_order')
+    const [cats, habs] = await Promise.all([
+      api('getCategories'),
+      api('getHabits')
     ])
-    if (catRes.data) setCategories(catRes.data)
-    if (habRes.data) {
-      setHabits(habRes.data)
-      if (catRes.data && catRes.data.length > 0 && !newHabitCategoryId) {
-        setNewHabitCategoryId(catRes.data[0].id)
+    if (cats) setCategories(cats)
+    if (habs) {
+      setHabits(habs)
+      if (cats && cats.length > 0 && !newHabitCategoryId) {
+        setNewHabitCategoryId(cats[0].id)
       }
     }
     setLoading(false)
@@ -39,41 +39,45 @@ export default function Manage() {
   const handleAddCategory = async (e) => {
     e.preventDefault()
     if (!newCategoryName.trim()) return
-    const { error } = await supabase.from('categories').insert([{
-      name: newCategoryName,
-      color: newCategoryColor,
-      sort_order: categories.length
-    }])
-    if (!error) {
+    try {
+      await api('addCategory', {
+        name: newCategoryName,
+        color: newCategoryColor,
+        sort_order: categories.length
+      })
       setNewCategoryName('')
       fetchData()
+    } catch (error) {
+      console.error(error)
     }
   }
 
   const handleDeleteCategory = async (id) => {
-    await supabase.from('categories').delete().eq('id', id)
+    await api('deleteCategory', { id })
     fetchData()
   }
 
   const handleAddHabit = async (e) => {
     e.preventDefault()
     if (!newHabitName.trim()) return
-    const { error } = await supabase.from('habits').insert([{
-      category_id: newHabitCategoryId || null,
-      name: newHabitName,
-      type: newHabitType,
-      unit: newHabitType === 'numeric' ? newHabitUnit : null,
-      sort_order: habits.length
-    }])
-    if (!error) {
+    try {
+      await api('addHabit', {
+        category_id: newHabitCategoryId || null,
+        name: newHabitName,
+        type: newHabitType,
+        unit: newHabitType === 'numeric' ? newHabitUnit : null,
+        sort_order: habits.length
+      })
       setNewHabitName('')
       setNewHabitUnit('')
       fetchData()
+    } catch (error) {
+      console.error(error)
     }
   }
 
   const handleArchiveHabit = async (id, currentArchived) => {
-    await supabase.from('habits').update({ archived: !currentArchived }).eq('id', id)
+    await api('toggleArchiveHabit', { id, archived: !currentArchived })
     fetchData()
   }
 
