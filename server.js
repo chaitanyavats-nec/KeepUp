@@ -41,6 +41,10 @@ app.post('/api/db', async (req, res) => {
       case 'addHabit': {
         const { category_id, name, type, unit, sort_order } = payload;
         const rows = await sql`INSERT INTO habits (category_id, name, type, unit, sort_order) VALUES (${category_id}, ${name}, ${type}, ${unit}, ${sort_order}) RETURNING *`;
+        return res.status(200).json(rows[0]);      }
+      case 'updateHabit': {
+        const { id, category_id, name, type, unit } = payload;
+        const rows = await sql`UPDATE habits SET category_id = ${category_id}, name = ${name}, type = ${type}, unit = ${unit} WHERE id = ${id} RETURNING *`;
         return res.status(200).json(rows[0]);
       }
       case 'toggleArchiveHabit': {

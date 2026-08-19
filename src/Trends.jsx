@@ -1,6 +1,11 @@
 import { useState, useEffect } from 'react'
 import { api } from './api'
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, YAxis } from 'recharts'
+import TaskSkeleton from './TaskSkeleton'
+import { formatDurationText } from './DurationTrackerItem'
+
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+const DAY_LABELS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
 
 export default function Trends() {
   const [data, setData] = useState({ categories: [], habits: [], logs: [] })
@@ -16,13 +21,15 @@ export default function Trends() {
     return localDate.toISOString().split('T')[0]
   }
 
+  const todayStr = getLocalDateString(new Date())
+
   const fetchTrendData = async () => {
     setLoading(true)
     
     const endDate = new Date()
     const startDate = new Date()
-    startDate.setDate(startDate.getDate() - 29) // last 30 days (including today)
-    
+    startDate.setDate(startDate.getDate() - 60) // Fetch wider range for monthly view
+
     const endStr = getLocalDateString(endDate)
     const startStr = getLocalDateString(startDate)
 
@@ -41,7 +48,20 @@ export default function Trends() {
     setLoading(false)
   }
 
-  // Generate array of last 30 days in 'YYYY-MM-DD' format
+  // Generate days for the current month as a calendar grid
+  const now = new Date()
+  const currentMonth = now.getMonth()
+  const currentYear = now.getFullYear()
+  const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate()
+  const firstDayOfWeek = new Date(currentYear, currentMonth, 1).getDay() // 0=Sun
+
+  const monthDays = []
+  for (let i = 1; i <= daysInMonth; i++) {
+    const d = new Date(currentYear, currentMonth, i)
+    monthDays.push(getLocalDateString(d))
+  }
+
+  // Generate last 30 days for charts
   const getLast30Days = () => {
     const days = []
     const today = new Date()
@@ -56,13 +76,11 @@ export default function Trends() {
 
   const calculateStreak = (habitId) => {
     let streak = 0
-    let today = getLocalDateString(new Date())
     let d = new Date()
     
-    // Check if logged today or yesterday to start streak count
-    const logToday = data.logs.find(l => l.habit_id === habitId && l.log_date === today)
+    const logToday = data.logs.find(l => l.habit_id === habitId && l.log_date === todayStr)
     if (!logToday) {
-      d.setDate(d.getDate() - 1) // Start check from yesterday
+      d.setDate(d.getDate() - 1)
     }
 
     while (true) {
@@ -89,15 +107,21 @@ export default function Trends() {
     allGroups.push({ id: 'uncategorized', name: 'Uncategorized', color: 'var(--text-color)', habits: uncategorizedHabits })
   }
 
-  if (loading) return <div>Loading...</div>
+  if (loading) return <TaskSkeleton />
 
   return (
-    <div className="trends-grid">
+    <div className="trends-grid fade-in">
+      {/* Month + Date Header */}
+      <div className="trends-header">
+        <div className="trends-month-label">{MONTH_NAMES[currentMonth]} {currentYear}</div>
+        <div className="trends-date-sub">Your activity log</div>
+      </div>
+
       {allGroups.map(cat => (
         <div key={cat.id}>
           <div className="category-title" style={{ marginBottom: '1rem' }}>
-            <div className="category-dot" style={{ backgroundColor: cat.color }} />
-            <h2 style={{ fontSize: '1.25rem' }}>{cat.name}</h2>
+            <div className="category-dot" style={{ backgroundColor: cat.color, width: '10px', height: '10px', borderRadius: '50%', display: 'inline-block', marginRight: '0.5rem' }} />
+            <h2 style={{ fontSize: '1.25rem', display: 'inline' }}>{cat.name}</h2>
           </div>
           
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -105,46 +129,64 @@ export default function Trends() {
               const habitLogs = data.logs.filter(l => l.habit_id === habit.id)
               
               if (habit.type === 'boolean') {
-                const total = habitLogs.length
+                const total = habitLogs.filter(l => monthDays.includes(l.log_date)).length
                 const streak = calculateStreak(habit.id)
+                
                 return (
                   <div key={habit.id} className="card" style={{ marginBottom: 0 }}>
-                    <h3 style={{ fontSize: '1rem', marginBottom: '0.5rem' }}>{habit.name}</h3>
-                    <div className="strand-month">
-                      {days30.map(day => {
+                    <h3 style={{ fontSize: '1rem', marginBottom: '0.75rem' }}>{habit.name}</h3>
+                    
+                    {/* Consistency Grid - Calendar style */}
+                    <div className="consistency-grid">
+                      {DAY_LABELS.map((label, i) => (
+                        <div key={i} className="consistency-day-label">{label}</div>
+                      ))}
+                      {/* Empty slots for offset */}
+                      {Array.from({ length: firstDayOfWeek }).map((_, i) => (
+                        <div key={`empty-${i}`} className="consistency-cell empty-slot" />
+                      ))}
+                      {/* Day cells */}
+                      {monthDays.map((day, i) => {
+                        const dayNum = i + 1
                         const log = habitLogs.find(l => l.log_date === day)
+                        const isTodayCell = day === todayStr
+                        const isFuture = day > todayStr
+                        
                         return (
                           <div 
                             key={day}
-                            className="mini-bead"
+                            className={`consistency-cell ${log ? 'filled' : ''} ${isTodayCell ? 'today-cell' : ''}`}
                             style={{ 
-                              borderColor: cat.color,
-                              backgroundColor: log ? cat.color : 'transparent',
-                              opacity: log ? 1 : 0.4
+                              backgroundColor: log ? cat.color : (isFuture ? 'transparent' : 'rgba(0,0,0,0.04)'),
+                              opacity: isFuture ? 0.2 : 1,
+                              color: log ? '#fff' : '#bbb'
                             }}
                             title={`${day}: ${log ? 'Done' : 'Missed'}`}
-                          />
+                          >
+                            {dayNum}
+                          </div>
                         )
                       })}
                     </div>
+                    
                     <div className="trend-stats">
                       <div className="stat-box">
-                        <span className="mono-text">30-Day</span>
-                        <span className="stat-value">{total}</span>
+                        <span className="mono-text">This Month</span>
+                        <span className="stat-value">{total}/{monthDays.filter(d => d <= todayStr).length}</span>
                       </div>
                       <div className="stat-box">
                         <span className="mono-text">Streak</span>
-                        <span className="stat-value">{streak}</span>
+                        <span className="stat-value">{streak} 🔥</span>
                       </div>
                     </div>
                   </div>
                 )
               } else {
-                // Numeric
+                // Numeric, Protein, or Duration
                 const chartData = days30.map(day => {
                   const log = habitLogs.find(l => l.log_date === day)
                   return {
-                    date: day.split('-').slice(1).join('/'), // MM/DD
+                    date: day.split('-').slice(1).join('/'),
                     value: log ? Number(log.value) : null
                   }
                 })
@@ -152,33 +194,70 @@ export default function Trends() {
                 const values = habitLogs.map(l => Number(l.value))
                 const sum = values.reduce((a, b) => a + b, 0)
                 const avg = values.length > 0 ? (sum / values.length).toFixed(1) : '-'
-                const latestLog = habitLogs.sort((a,b) => b.log_date.localeCompare(a.log_date))[0]
+                const latestLog = [...habitLogs].sort((a,b) => b.log_date.localeCompare(a.log_date))[0]
                 const latestVal = latestLog ? latestLog.value : '-'
                 
+                const isDuration = habit.type === 'duration'
+                const isProtein = habit.type === 'protein'
+
+                const barColor = isDuration ? 'var(--accent-amber)' : (isProtein ? 'var(--accent-protein)' : cat.color)
+                const unitLabel = isProtein ? 'g protein' : (habit.unit || 'mins')
+
                 return (
                   <div key={habit.id} className="card" style={{ marginBottom: 0 }}>
-                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem' }}>{habit.name}</h3>
+                    <h3 style={{ fontSize: '1rem', marginBottom: '1rem' }}>
+                      {habit.name}
+                      {isProtein && (
+                        <span style={{ fontSize: '0.7rem', color: 'var(--accent-protein)', marginLeft: '0.5rem', fontWeight: 500 }}>PROTEIN</span>
+                      )}
+                      {isDuration && (
+                        <span style={{ fontSize: '0.7rem', color: 'var(--accent-amber)', marginLeft: '0.5rem', fontWeight: 500 }}>DURATION</span>
+                      )}
+                    </h3>
                     <div style={{ height: '160px', width: '100%', marginLeft: '-1rem' }}>
                       <ResponsiveContainer width="100%" height="100%">
                         <BarChart data={chartData}>
                           <XAxis dataKey="date" tick={{ fontSize: 10, fill: 'var(--text-color)' }} axisLine={false} tickLine={false} />
+                          <YAxis hide domain={[0, 'auto']} />
                           <Tooltip 
                             cursor={{ fill: 'rgba(0,0,0,0.05)' }} 
                             contentStyle={{ backgroundColor: 'var(--card-bg)', border: '1px solid var(--border-color)', borderRadius: '6px' }}
+                            formatter={(value) => [
+                              isDuration ? formatDurationText(value) : `${value} ${unitLabel}`, 
+                              habit.name
+                            ]}
                           />
-                          <Bar dataKey="value" fill={cat.color} radius={[4,4,0,0]} isAnimationActive={false} />
+                          <Bar dataKey="value" fill={barColor} radius={[4,4,0,0]} isAnimationActive={false} />
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
                     <div className="trend-stats">
                       <div className="stat-box">
                         <span className="mono-text">Average</span>
-                        <span className="stat-value">{avg} {avg !== '-' && habit.unit}</span>
+                        <span className="stat-value">
+                          {avg !== '-' 
+                            ? (isDuration ? formatDurationText(Math.round(avg)) : `${avg} ${unitLabel}`) 
+                            : '-'
+                          }
+                        </span>
                       </div>
                       <div className="stat-box">
                         <span className="mono-text">Latest</span>
-                        <span className="stat-value">{latestVal} {latestVal !== '-' && habit.unit}</span>
+                        <span className="stat-value">
+                          {latestVal !== '-' 
+                            ? (isDuration ? formatDurationText(latestVal) : `${latestVal} ${unitLabel}`) 
+                            : '-'
+                          }
+                        </span>
                       </div>
+                      {(isProtein || isDuration) && (
+                        <div className="stat-box">
+                          <span className="mono-text">Total (30d)</span>
+                          <span className="stat-value">
+                            {isDuration ? formatDurationText(sum) : `${sum}g`}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )
