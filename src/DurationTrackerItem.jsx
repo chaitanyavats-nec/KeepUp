@@ -152,7 +152,7 @@ export default function DurationTrackerItem({ habit, currentLog, dateString, onS
   return (
     <div className="duration-section">
       {/* Habit Header Bar */}
-      <div className="duration-header-bar" onClick={() => setIsOpen(!isOpen)}>
+      <button type="button" className="duration-header-bar" onClick={() => setIsOpen(!isOpen)} aria-expanded={isOpen}>
         <div className="duration-header-left">
           <span className="duration-habit-name">{habit.name}</span>
           {isTimerRunning && (
@@ -181,7 +181,7 @@ export default function DurationTrackerItem({ habit, currentLog, dateString, onS
             </svg>
           </div>
         </div>
-      </div>
+      </button>
 
       {/* Expandable Control Panel */}
       <div className={`duration-panel ${isOpen ? 'duration-panel--open' : ''}`}>
