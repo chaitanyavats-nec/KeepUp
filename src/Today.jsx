@@ -1,27 +1,17 @@
 import { useState, useEffect, useCallback } from 'react'
 import { api } from './api'
-import { PROTEIN_FOODS } from './proteinFoods'
 import TaskSkeleton from './TaskSkeleton'
 import DurationTrackerItem from './DurationTrackerItem'
+import OptionsTrackerItem from './OptionsTrackerItem'
+import ProgressRing from './ProgressRing'
+import { DAY_NAMES, MONTH_NAMES, getLocalDateString } from './dateUtils'
 
-const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
-
-export default function Today() {
-  const [data, setData] = useState({ categories: [], habits: [], logs: [] })
+export default function Today({ onOpenAdd }) {
+  const [data, setData] = useState({ categories: [], habits: [], logs: [], options: [] })
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [numericInputs, setNumericInputs] = useState({})
   const [selectedDate, setSelectedDate] = useState(new Date())
-  
-  // Protein checklist state
-  const [proteinSelections, setProteinSelections] = useState({}) // { habitId: { foodId: true/false } }
-  const [proteinPanelOpen, setProteinPanelOpen] = useState({}) // { habitId: true/false }
-
-  const getLocalDateString = (d) => {
-    const offset = d.getTimezoneOffset()
-    const localDate = new Date(d.getTime() - (offset * 60 * 1000))
-    return localDate.toISOString().split('T')[0]
-  }
 
   const dateString = getLocalDateString(selectedDate)
   
@@ -36,37 +26,32 @@ export default function Today() {
 
   const fetchTodayData = useCallback(async () => {
     setLoading(true)
-    
-    const [cats, habs, logs] = await Promise.all([
-      api('getCategories'),
-      api('getHabits', { archived: false }),
-      api('getLogsByDate', { date: dateString })
-    ])
+    setError(null)
 
-    setData({ categories: cats || [], habits: habs || [], logs: logs || [] })
+    try {
+      const [cats, habs, logs, options] = await Promise.all([
+        api('getCategories'),
+        api('getHabits', { archived: false }),
+        api('getLogsByDate', { date: dateString }),
+        api('getHabitOptions')
+      ])
 
-    // Initialize numeric inputs state
-    const inputs = {}
-    if (habs) {
-      habs.filter(h => h.type === 'numeric' || h.type === 'protein').forEach(h => {
-        const log = logs?.find(l => l.habit_id === h.id)
-        inputs[h.id] = log ? log.value.toString() : ''
-      })
+      setData({ categories: cats || [], habits: habs || [], logs: logs || [], options: options || [] })
+
+      // Initialize numeric inputs state
+      const inputs = {}
+      if (habs) {
+        habs.filter(h => h.type === 'numeric').forEach(h => {
+          const log = logs?.find(l => l.habit_id === h.id)
+          inputs[h.id] = log ? log.value.toString() : ''
+        })
+      }
+      setNumericInputs(inputs)
+    } catch (err) {
+      setError(err.message || 'Failed to load your habits.')
+    } finally {
+      setLoading(false)
     }
-    setNumericInputs(inputs)
-
-    // Load protein selections from localStorage
-    if (habs) {
-      const protSel = {}
-      habs.filter(h => h.type === 'protein').forEach(h => {
-        const key = `protein_${h.id}_${dateString}`
-        const saved = localStorage.getItem(key)
-        protSel[h.id] = saved ? JSON.parse(saved) : {}
-      })
-      setProteinSelections(protSel)
-    }
-
-    setLoading(false)
   }, [dateString])
 
   useEffect(() => {
@@ -188,54 +173,98 @@ export default function Today() {
     }
   }
 
-  // Protein checklist handlers
-  const toggleProteinFood = async (habitId, foodId, grams) => {
-    const current = proteinSelections[habitId] || {}
-    const isSelected = !!current[foodId]
-    const updated = { ...current, [foodId]: !isSelected }
-    
-    // Update local state
-    setProteinSelections(prev => ({ ...prev, [habitId]: updated }))
-    
-    // Save to localStorage
-    const key = `protein_${habitId}_${dateString}`
-    localStorage.setItem(key, JSON.stringify(updated))
-    
-    // Calculate total
-    const totalGrams = PROTEIN_FOODS.reduce((sum, food) => {
-      return sum + (updated[food.id] ? food.grams : 0)
+  // Generic handler for 'checklist' (multi-select) and 'choice' (single-select) habits
+  const handleToggleOption = async (habit, optionId) => {
+    const multiple = habit.type === 'checklist'
+    const currentLog = data.logs.find(l => l.habit_id === habit.id)
+
+    let selectedIds = []
+    if (currentLog?.note) {
+      try {
+        const parsed = JSON.parse(currentLog.note)
+        if (Array.isArray(parsed)) selectedIds = parsed
+      } catch {
+        selectedIds = []
+      }
+    }
+
+    if (multiple) {
+      selectedIds = selectedIds.includes(optionId)
+        ? selectedIds.filter(id => id !== optionId)
+        : [...selectedIds, optionId]
+    } else {
+      // Single-select: tapping the current selection clears it, otherwise replaces it
+      selectedIds = selectedIds[0] === optionId ? [] : [optionId]
+    }
+
+    const habitOptions = data.options.filter(o => o.habit_id === habit.id)
+    const total = selectedIds.reduce((sum, id) => {
+      const opt = habitOptions.find(o => o.id === id)
+      return sum + (opt ? Number(opt.value ?? 1) : 0)
     }, 0)
-    
-    // Update numeric input display
-    setNumericInputs(prev => ({ ...prev, [habitId]: totalGrams.toString() }))
-    
-    // Save to DB
-    const currentLog = data.logs.find(l => l.habit_id === habitId)
-    if (totalGrams === 0) {
+    const note = JSON.stringify(selectedIds)
+
+    if (selectedIds.length === 0) {
       if (currentLog) {
         const newLogs = data.logs.filter(l => l.id !== currentLog.id)
         setData(prev => ({ ...prev, logs: newLogs }))
         await api('deleteLog', { id: currentLog.id })
       }
     } else if (currentLog) {
-      const newLogs = data.logs.map(l => l.id === currentLog.id ? { ...l, value: totalGrams } : l)
+      const newLogs = data.logs.map(l => l.id === currentLog.id ? { ...l, value: total, note } : l)
       setData(prev => ({ ...prev, logs: newLogs }))
-      await api('updateLog', { id: currentLog.id, value: totalGrams })
+      await api('updateLog', { id: currentLog.id, value: total, note })
     } else {
-      const tempLog = { id: 'temp_p', habit_id: habitId, log_date: dateString, value: totalGrams }
+      const tempLog = { id: 'temp_opt', habit_id: habit.id, log_date: dateString, value: total, note }
       const newLogs = [...data.logs, tempLog]
       setData(prev => ({ ...prev, logs: newLogs }))
-      
+
       const inserted = await api('addLog', {
-        habit_id: habitId,
+        habit_id: habit.id,
         log_date: dateString,
-        value: totalGrams
+        value: total,
+        note
       })
-      
+
       if (inserted) {
         setData(prev => ({
           ...prev,
-          logs: prev.logs.map(l => l.id === 'temp_p' ? inserted : l)
+          logs: prev.logs.map(l => l.id === 'temp_opt' ? inserted : l)
+        }))
+      }
+    }
+  }
+
+  // Scale/rating: tapping a number saves instantly; tapping the current value clears it
+  const handleSaveScale = async (habitId, value) => {
+    const currentLog = data.logs.find(l => l.habit_id === habitId)
+
+    if (currentLog && Number(currentLog.value) === value) {
+      const newLogs = data.logs.filter(l => l.id !== currentLog.id)
+      setData(prev => ({ ...prev, logs: newLogs }))
+      await api('deleteLog', { id: currentLog.id })
+      return
+    }
+
+    if (currentLog) {
+      const newLogs = data.logs.map(l => l.id === currentLog.id ? { ...l, value } : l)
+      setData(prev => ({ ...prev, logs: newLogs }))
+      await api('updateLog', { id: currentLog.id, value })
+    } else {
+      const tempLog = { id: 'temp_scale', habit_id: habitId, log_date: dateString, value }
+      const newLogs = [...data.logs, tempLog]
+      setData(prev => ({ ...prev, logs: newLogs }))
+
+      const inserted = await api('addLog', {
+        habit_id: habitId,
+        log_date: dateString,
+        value
+      })
+
+      if (inserted) {
+        setData(prev => ({
+          ...prev,
+          logs: prev.logs.map(l => l.id === 'temp_scale' ? inserted : l)
         }))
       }
     }
@@ -243,12 +272,25 @@ export default function Today() {
 
   if (loading) return <TaskSkeleton />
 
+  if (error) {
+    return (
+      <div className="fade-in error-state">
+        <div className="error-state-title">Couldn't load today's habits</div>
+        <p>{error}</p>
+        <button className="btn btn-primary" style={{ marginTop: '1rem' }} onClick={fetchTodayData}>Retry</button>
+      </div>
+    )
+  }
+
   const categoriesWithHabits = data.categories.map((cat) => ({
     ...cat,
     habits: data.habits.filter(h => h.category_id === cat.id)
   })).filter(cat => cat.habits.length > 0)
 
   const uncategorizedHabits = data.habits.filter(h => !h.category_id)
+
+  const doneCount = data.habits.filter(h => data.logs.some(l => l.habit_id === h.id)).length
+  const totalCount = data.habits.length
 
   const renderHabit = (habit) => {
     const log = data.logs.find(l => l.habit_id === habit.id)
@@ -265,47 +307,41 @@ export default function Today() {
       )
     }
 
-    if (habit.type === 'protein') {
-      const selections = proteinSelections[habit.id] || {}
-      const totalGrams = PROTEIN_FOODS.reduce((sum, food) => sum + (selections[food.id] ? food.grams : 0), 0)
-      const isPanelOpen = proteinPanelOpen[habit.id]
+    if (habit.type === 'checklist' || habit.type === 'choice') {
+      const habitOptions = data.options.filter(o => o.habit_id === habit.id)
+      return (
+        <OptionsTrackerItem
+          key={habit.id}
+          habit={habit}
+          options={habitOptions}
+          currentLog={log}
+          onToggleOption={(optionId) => handleToggleOption(habit, optionId)}
+        />
+      )
+    }
+
+    if (habit.type === 'scale') {
+      const min = habit.scale_min ?? 1
+      const max = habit.scale_max ?? 5
+      const current = log ? Number(log.value) : null
+      const values = []
+      for (let v = min; v <= max; v++) values.push(v)
 
       return (
-        <div key={habit.id} className="protein-section">
-          <div 
-            className="protein-toggle-btn"
-            onClick={() => setProteinPanelOpen(prev => ({ ...prev, [habit.id]: !prev[habit.id] }))}
-          >
-            <span>{habit.name}</span>
-            <div className="protein-total-badge">
-              {totalGrams}g
-              <svg viewBox="0 0 24 24" width="12" height="12" stroke="currentColor" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round"
-                style={{ transform: isPanelOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.25s ease' }}>
-                <path d="M6 9l6 6 6-6" />
-              </svg>
-            </div>
-          </div>
-          <div className={`protein-panel ${isPanelOpen ? 'protein-panel--open' : ''}`}>
-            <div className="protein-food-list">
-              {PROTEIN_FOODS.map(food => {
-                const isChecked = !!selections[food.id]
-                return (
-                  <div 
-                    key={food.id} 
-                    className="protein-food-item"
-                    onClick={() => toggleProteinFood(habit.id, food.id, food.grams)}
-                  >
-                    <div className="protein-food-left">
-                      <div className={`protein-food-check ${isChecked ? 'checked' : ''}`}>
-                        <svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7" /></svg>
-                      </div>
-                      <span className="protein-food-name">{food.name}</span>
-                    </div>
-                    <span className="protein-food-grams">{food.grams}g</span>
-                  </div>
-                )
-              })}
-            </div>
+        <div key={habit.id} className="modern-habit-item scale-habit-item">
+          <span>{habit.name}{habit.unit ? <span className="scale-unit-hint"> · {habit.unit}</span> : null}</span>
+          <div className="scale-picker">
+            {values.map(v => (
+              <button
+                type="button"
+                key={v}
+                className="scale-btn"
+                data-selected={current === v}
+                onClick={() => handleSaveScale(habit.id, v)}
+              >
+                {v}
+              </button>
+            ))}
           </div>
         </div>
       )
@@ -370,22 +406,45 @@ export default function Today() {
         </div>
       </div>
 
-      {categoriesWithHabits.map((cat) => (
-        <div key={cat.id}>
-          <h3 className="section-title">{cat.name}:</h3>
-          <div className="modern-card">
-            {cat.habits.map(habit => renderHabit(habit))}
+      {totalCount > 0 && isToday && (
+        <div className="today-progress-row">
+          <ProgressRing done={doneCount} total={totalCount} />
+          <div className="today-progress-text">
+            <span className="today-progress-title">
+              {doneCount === totalCount ? 'All done for today! 🎉' : "Today's progress"}
+            </span>
+            <span className="today-progress-sub">{doneCount} of {totalCount} habits logged</span>
           </div>
         </div>
-      ))}
+      )}
 
-      {uncategorizedHabits.length > 0 && (
-        <div>
-          <h3 className="section-title">Other:</h3>
-          <div className="modern-card">
-            {uncategorizedHabits.map(habit => renderHabit(habit))}
-          </div>
+      {totalCount === 0 ? (
+        <div className="empty-state">
+          <div className="empty-state-icon">🌱</div>
+          <div className="empty-state-title">No habits yet</div>
+          <div className="empty-state-sub">Add your first habit to start tracking.</div>
+          {onOpenAdd && <button className="btn btn-primary" onClick={onOpenAdd}>Add a Habit</button>}
         </div>
+      ) : (
+        <>
+          {categoriesWithHabits.map((cat) => (
+            <div key={cat.id}>
+              <h3 className="section-title">{cat.name}:</h3>
+              <div className="modern-card">
+                {cat.habits.map(habit => renderHabit(habit))}
+              </div>
+            </div>
+          ))}
+
+          {uncategorizedHabits.length > 0 && (
+            <div>
+              <h3 className="section-title">Other:</h3>
+              <div className="modern-card">
+                {uncategorizedHabits.map(habit => renderHabit(habit))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

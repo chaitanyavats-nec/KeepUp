@@ -3,11 +3,22 @@ import { api } from './api'
 import TaskSkeleton from './TaskSkeleton'
 
 const COLORS = ['#A9667C', '#3F5E4E', '#B8823C', '#4E5F70', '#99684C', '#564654']
+const OPTIONS_TYPES = ['checklist', 'choice']
+
+function goalFieldLabel(type) {
+  return type === 'boolean' ? 'Weekly goal (times/week, optional)' : 'Daily goal (optional)'
+}
+
+function goalPeriodForType(type) {
+  return type === 'boolean' ? 'week' : 'day'
+}
 
 export default function Manage() {
   const [categories, setCategories] = useState([])
   const [habits, setHabits] = useState([])
+  const [options, setOptions] = useState([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryColor, setNewCategoryColor] = useState(COLORS[0])
@@ -16,12 +27,25 @@ export default function Manage() {
   const [newHabitCategoryId, setNewHabitCategoryId] = useState('')
   const [newHabitType, setNewHabitType] = useState('boolean')
   const [newHabitUnit, setNewHabitUnit] = useState('')
+  const [newHabitGoal, setNewHabitGoal] = useState('')
+  const [newHabitScaleMin, setNewHabitScaleMin] = useState('1')
+  const [newHabitScaleMax, setNewHabitScaleMax] = useState('5')
+  const [newHabitItems, setNewHabitItems] = useState([]) // pending {label, value} for checklist/choice
+  const [newItemLabel, setNewItemLabel] = useState('')
+  const [newItemValue, setNewItemValue] = useState('')
+  const [addHabitError, setAddHabitError] = useState('')
 
   const [editingHabitId, setEditingHabitId] = useState(null)
   const [editHabitName, setEditHabitName] = useState('')
   const [editHabitCategoryId, setEditHabitCategoryId] = useState('')
   const [editHabitType, setEditHabitType] = useState('boolean')
   const [editHabitUnit, setEditHabitUnit] = useState('')
+  const [editHabitGoal, setEditHabitGoal] = useState('')
+  const [editHabitScaleMin, setEditHabitScaleMin] = useState('1')
+  const [editHabitScaleMax, setEditHabitScaleMax] = useState('5')
+  const [editItemLabel, setEditItemLabel] = useState('')
+  const [editItemValue, setEditItemValue] = useState('')
+  const [editHabitError, setEditHabitError] = useState('')
 
   useEffect(() => {
     fetchData()
@@ -29,18 +53,24 @@ export default function Manage() {
 
   const fetchData = async () => {
     setLoading(true)
-    const [cats, habs] = await Promise.all([
-      api('getCategories'),
-      api('getHabits')
-    ])
-    if (cats) setCategories(cats)
-    if (habs) {
-      setHabits(habs)
+    setError(null)
+    try {
+      const [cats, habs, opts] = await Promise.all([
+        api('getCategories'),
+        api('getHabits'),
+        api('getHabitOptions')
+      ])
+      setCategories(cats || [])
+      setHabits(habs || [])
+      setOptions(opts || [])
       if (cats && cats.length > 0 && !newHabitCategoryId) {
         setNewHabitCategoryId(cats[0].id)
       }
+    } catch (err) {
+      setError(err.message || 'Failed to load categories and habits.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false)
   }
 
   const handleAddCategory = async (e) => {
@@ -48,48 +78,106 @@ export default function Manage() {
     if (!newCategoryName.trim()) return
     try {
       await api('addCategory', {
-        name: newCategoryName,
+        name: newCategoryName.trim(),
         color: newCategoryColor,
         sort_order: categories.length
       })
       setNewCategoryName('')
       fetchData()
-    } catch (error) {
-      console.error(error)
+    } catch (err) {
+      setError(err.message || 'Failed to add category.')
     }
   }
 
-  const handleDeleteCategory = async (id) => {
-    await api('deleteCategory', { id })
-    fetchData()
+  const handleDeleteCategory = async (id, name) => {
+    if (!confirm(`Delete "${name}"? Habits in this category will become uncategorized.`)) return
+    try {
+      await api('deleteCategory', { id })
+      fetchData()
+    } catch (err) {
+      setError(err.message || 'Failed to delete category.')
+    }
+  }
+
+  const resolveUnit = (type, unit) => {
+    if (type === 'numeric' || type === 'checklist' || type === 'scale') return unit || null
+    if (type === 'duration') return unit || 'mins'
+    return null
+  }
+
+  const resolveGoal = (type, goalValue) => {
+    if (type === 'scale' || type === 'choice') return { goal_target: null, goal_period: null }
+    const parsed = parseFloat(goalValue)
+    if (isNaN(parsed) || parsed <= 0) return { goal_target: null, goal_period: null }
+    return { goal_target: parsed, goal_period: goalPeriodForType(type) }
+  }
+
+  const resolveScale = (type, min, max) => {
+    if (type !== 'scale') return { scale_min: null, scale_max: null }
+    const parsedMin = parseInt(min, 10)
+    const parsedMax = parseInt(max, 10)
+    return {
+      scale_min: isNaN(parsedMin) ? 1 : parsedMin,
+      scale_max: isNaN(parsedMax) ? 5 : parsedMax
+    }
+  }
+
+  const addPendingItem = () => {
+    if (!newItemLabel.trim()) return
+    const parsedValue = parseFloat(newItemValue)
+    setNewHabitItems(prev => [...prev, { label: newItemLabel.trim(), value: isNaN(parsedValue) ? null : parsedValue }])
+    setNewItemLabel('')
+    setNewItemValue('')
+  }
+
+  const removePendingItem = (idx) => {
+    setNewHabitItems(prev => prev.filter((_, i) => i !== idx))
   }
 
   const handleAddHabit = async (e) => {
     e.preventDefault()
     if (!newHabitName.trim()) return
+    setAddHabitError('')
     try {
-      const unit = newHabitType === 'numeric' 
-        ? newHabitUnit 
-        : (newHabitType === 'duration' ? (newHabitUnit || 'mins') : (newHabitType === 'protein' ? 'g' : null))
-        
-      await api('addHabit', {
+      const { goal_target, goal_period } = resolveGoal(newHabitType, newHabitGoal)
+      const { scale_min, scale_max } = resolveScale(newHabitType, newHabitScaleMin, newHabitScaleMax)
+      const created = await api('addHabit', {
         category_id: newHabitCategoryId || null,
-        name: newHabitName,
+        name: newHabitName.trim(),
         type: newHabitType,
-        unit: unit,
-        sort_order: habits.length
+        unit: resolveUnit(newHabitType, newHabitUnit),
+        sort_order: habits.length,
+        goal_target,
+        goal_period,
+        scale_min,
+        scale_max
       })
+
+      if (OPTIONS_TYPES.includes(newHabitType) && newHabitItems.length > 0) {
+        await Promise.all(newHabitItems.map((item, idx) =>
+          api('addHabitOption', { habit_id: created.id, label: item.label, value: item.value, sort_order: idx })
+        ))
+      }
+
       setNewHabitName('')
       setNewHabitUnit('')
+      setNewHabitGoal('')
+      setNewHabitScaleMin('1')
+      setNewHabitScaleMax('5')
+      setNewHabitItems([])
       fetchData()
-    } catch (error) {
-      console.error(error)
+    } catch (err) {
+      setAddHabitError(err.message || 'Failed to add habit.')
     }
   }
 
   const handleArchiveHabit = async (id, currentArchived) => {
-    await api('toggleArchiveHabit', { id, archived: !currentArchived })
-    fetchData()
+    try {
+      await api('toggleArchiveHabit', { id, archived: !currentArchived })
+      fetchData()
+    } catch (err) {
+      setError(err.message || 'Failed to update habit.')
+    }
   }
 
   const startEditingHabit = (habit) => {
@@ -98,27 +186,62 @@ export default function Manage() {
     setEditHabitCategoryId(habit.category_id || '')
     setEditHabitType(habit.type)
     setEditHabitUnit(habit.unit || '')
+    setEditHabitGoal(habit.goal_target != null ? String(habit.goal_target) : '')
+    setEditHabitScaleMin(habit.scale_min != null ? String(habit.scale_min) : '1')
+    setEditHabitScaleMax(habit.scale_max != null ? String(habit.scale_max) : '5')
+    setEditItemLabel('')
+    setEditItemValue('')
+    setEditHabitError('')
   }
 
   const handleUpdateHabit = async (e) => {
     e.preventDefault()
     if (!editHabitName.trim()) return
     try {
-      const unit = editHabitType === 'numeric' 
-        ? editHabitUnit 
-        : (editHabitType === 'duration' ? (editHabitUnit || 'mins') : (editHabitType === 'protein' ? 'g' : null))
-      
+      const { goal_target, goal_period } = resolveGoal(editHabitType, editHabitGoal)
+      const { scale_min, scale_max } = resolveScale(editHabitType, editHabitScaleMin, editHabitScaleMax)
       await api('updateHabit', {
         id: editingHabitId,
         category_id: editHabitCategoryId || null,
-        name: editHabitName,
+        name: editHabitName.trim(),
         type: editHabitType,
-        unit: unit
+        unit: resolveUnit(editHabitType, editHabitUnit),
+        goal_target,
+        goal_period,
+        scale_min,
+        scale_max
       })
       setEditingHabitId(null)
       fetchData()
-    } catch (error) {
-      console.error(error)
+    } catch (err) {
+      setEditHabitError(err.message || 'Failed to update habit.')
+    }
+  }
+
+  const addLiveItem = async (habitId) => {
+    if (!editItemLabel.trim()) return
+    try {
+      const parsedValue = parseFloat(editItemValue)
+      await api('addHabitOption', {
+        habit_id: habitId,
+        label: editItemLabel.trim(),
+        value: isNaN(parsedValue) ? null : parsedValue,
+        sort_order: options.filter(o => o.habit_id === habitId).length
+      })
+      setEditItemLabel('')
+      setEditItemValue('')
+      fetchData()
+    } catch (err) {
+      setEditHabitError(err.message || 'Failed to add item.')
+    }
+  }
+
+  const deleteLiveItem = async (optionId) => {
+    try {
+      await api('deleteHabitOption', { id: optionId })
+      fetchData()
+    } catch (err) {
+      setEditHabitError(err.message || 'Failed to remove item.')
     }
   }
 
@@ -126,81 +249,106 @@ export default function Manage() {
 
   const getTypeLabel = (habit) => {
     if (habit.type === 'duration') return `Duration (${habit.unit || 'mins'})`
-    if (habit.type === 'protein') return 'Protein Tracker (g)'
+    if (habit.type === 'checklist') return `Checklist${habit.unit ? ` (${habit.unit})` : ''}`
+    if (habit.type === 'scale') return `Scale (${habit.scale_min ?? 1}-${habit.scale_max ?? 5})`
+    if (habit.type === 'choice') return 'Single Choice'
     if (habit.type === 'numeric') return `Numeric${habit.unit ? ` (${habit.unit})` : ''}`
     return 'Consistency'
   }
 
+  const getGoalLabel = (habit) => {
+    if (!habit.goal_target) return null
+    if (habit.goal_period === 'week') return `Goal: ${habit.goal_target}x/week`
+    return `Goal: ${habit.goal_target}${habit.unit ? ` ${habit.unit}` : ''}/day`
+  }
+
+  const accentForType = (type) => {
+    if (type === 'duration') return 'var(--accent-amber)'
+    if (type === 'checklist') return 'var(--accent-protein)'
+    if (type === 'choice') return 'var(--accent-slate)'
+    return 'var(--muted-text)'
+  }
+
   return (
     <div className="fade-in">
+      <h1 className="page-title">Manage</h1>
+
+      {error && (
+        <div className="error-state" style={{ padding: '1rem' }}>
+          <div className="error-state-title">{error}</div>
+          <button className="btn" onClick={fetchData}>Retry</button>
+        </div>
+      )}
+
       <div>
-        <h3 className="section-title">Categories</h3>
+        <h3 className="settings-header">Categories</h3>
         <div className="modern-card">
           <form onSubmit={handleAddCategory} style={{ marginBottom: '1.5rem' }}>
-            <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.8rem', color: '#555' }}>Category Name</label>
-              <input 
-                value={newCategoryName} 
-                onChange={e => setNewCategoryName(e.target.value)} 
+            <div className="form-group">
+              <label className="field-label">Category Name</label>
+              <input
+                className="text-input"
+                value={newCategoryName}
+                onChange={e => setNewCategoryName(e.target.value)}
                 placeholder="e.g. Health"
-                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #aaa', background: 'transparent' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.8rem', color: '#555' }}>Color</label>
-              <div className="color-picker" style={{ display: 'flex', gap: '0.5rem' }}>
+            <div className="form-group">
+              <label className="field-label">Color</label>
+              <div className="color-picker">
                 {COLORS.map(color => (
-                  <div 
+                  <button
                     key={color}
+                    type="button"
                     className="color-option"
-                    style={{ 
-                      backgroundColor: color, 
-                      width: '24px', 
-                      height: '24px', 
-                      borderRadius: '50%',
-                      border: newCategoryColor === color ? '2px solid #000' : '2px solid transparent'
-                    }}
+                    data-selected={newCategoryColor === color}
+                    style={{ backgroundColor: color }}
                     onClick={() => setNewCategoryColor(color)}
+                    aria-label={`Select color ${color}`}
+                    aria-pressed={newCategoryColor === color}
                   />
                 ))}
               </div>
             </div>
-            <button style={{ padding: '0.5rem 1rem', borderRadius: '8px', backgroundColor: '#333', color: '#fff', fontWeight: 'bold' }} type="submit">Add Category</button>
+            <button className="btn btn-primary" type="submit">Add Category</button>
           </form>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div>
             {categories.map(cat => (
-              <div key={cat.id} className="modern-habit-item">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <div style={{ backgroundColor: cat.color, width: '12px', height: '12px', borderRadius: '50%' }} />
+              <div key={cat.id} className="list-row">
+                <div className="list-row-left">
+                  <div className="list-row-swatch" style={{ backgroundColor: cat.color }} />
                   <span>{cat.name}</span>
                 </div>
-                <button style={{ color: '#d9534f', fontSize: '0.8rem' }} onClick={() => handleDeleteCategory(cat.id)}>Delete</button>
+                <button className="btn-danger" onClick={() => handleDeleteCategory(cat.id, cat.name)}>Delete</button>
               </div>
             ))}
+            {categories.length === 0 && (
+              <p className="habit-row-meta" style={{ padding: '0.5rem 0' }}>No categories yet.</p>
+            )}
           </div>
         </div>
       </div>
 
       <div>
-        <h3 className="section-title">Habits</h3>
+        <h3 className="settings-header">Habits</h3>
         <div className="modern-card">
           <form onSubmit={handleAddHabit} style={{ marginBottom: '1.5rem' }}>
-            <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.8rem', color: '#555' }}>Habit Name</label>
-              <input 
-                value={newHabitName} 
-                onChange={e => setNewHabitName(e.target.value)} 
+            <div className="form-group">
+              <label className="field-label">Habit Name</label>
+              <input
+                className="text-input"
+                value={newHabitName}
+                onChange={e => setNewHabitName(e.target.value)}
                 placeholder="e.g. Deep Work, Read"
-                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #aaa', background: 'transparent' }}
               />
             </div>
-            <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.8rem', color: '#555' }}>Category</label>
-              <select 
-                value={newHabitCategoryId} 
+            <div className="form-group">
+              <label className="field-label">Category</label>
+              <select
+                className="select-input"
+                value={newHabitCategoryId}
                 onChange={e => setNewHabitCategoryId(e.target.value)}
-                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #aaa', background: 'transparent' }}
               >
                 <option value="">Uncategorized</option>
                 {categories.map(cat => (
@@ -208,116 +356,273 @@ export default function Manage() {
                 ))}
               </select>
             </div>
-            <div className="form-group" style={{ marginBottom: '1rem' }}>
-              <label style={{ fontSize: '0.8rem', color: '#555' }}>Type</label>
-              <select 
-                value={newHabitType} 
+            <div className="form-group">
+              <label className="field-label">Type</label>
+              <select
+                className="select-input"
+                value={newHabitType}
                 onChange={e => setNewHabitType(e.target.value)}
-                style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #aaa', background: 'transparent' }}
               >
                 <option value="boolean">Consistency (Done/Not done)</option>
                 <option value="duration">Duration (Timer / Range / Input)</option>
                 <option value="numeric">Value (Number)</option>
-                <option value="protein">Protein Tracker (Food checklist)</option>
+                <option value="scale">Scale / Rating (e.g. mood 1-5)</option>
+                <option value="checklist">Checklist (check off multiple items)</option>
+                <option value="choice">Single Choice (pick one option)</option>
               </select>
             </div>
 
             {newHabitType === 'duration' && (
               <>
-                <div className="form-group" style={{ marginBottom: '1rem' }}>
-                  <label style={{ fontSize: '0.8rem', color: '#555' }}>Unit (Optional)</label>
-                  <input 
-                    value={newHabitUnit} 
-                    onChange={e => setNewHabitUnit(e.target.value)} 
+                <div className="form-group">
+                  <label className="field-label">Unit (Optional)</label>
+                  <input
+                    className="text-input"
+                    value={newHabitUnit}
+                    onChange={e => setNewHabitUnit(e.target.value)}
                     placeholder="e.g. mins, hrs (default: mins)"
-                    style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #aaa', background: 'transparent' }}
                   />
                 </div>
-                <div style={{ fontSize: '0.78rem', color: '#888', marginBottom: '1rem', padding: '0.5rem', background: 'rgba(184,130,60,0.08)', borderRadius: '8px' }}>
+                <div className="hint-box hint-box-amber">
                   ⏱️ Track time with an active stopwatch timer, set a start/end time range, or log total minutes directly.
                 </div>
               </>
             )}
 
             {newHabitType === 'numeric' && (
-              <div className="form-group" style={{ marginBottom: '1rem' }}>
-                <label style={{ fontSize: '0.8rem', color: '#555' }}>Unit (Optional)</label>
-                <input 
-                  value={newHabitUnit} 
-                  onChange={e => setNewHabitUnit(e.target.value)} 
+              <div className="form-group">
+                <label className="field-label">Unit (Optional)</label>
+                <input
+                  className="text-input"
+                  value={newHabitUnit}
+                  onChange={e => setNewHabitUnit(e.target.value)}
                   placeholder="e.g. pages, km"
-                  style={{ width: '100%', padding: '0.5rem', borderRadius: '4px', border: '1px solid #aaa', background: 'transparent' }}
                 />
               </div>
             )}
 
-            {newHabitType === 'protein' && (
-              <div style={{ fontSize: '0.78rem', color: '#888', marginBottom: '1rem', padding: '0.5rem', background: 'rgba(123,94,167,0.08)', borderRadius: '8px' }}>
-                🥩 This creates a food checklist. Check what you ate each day and the app auto-sums protein grams.
+            {newHabitType === 'scale' && (
+              <div className="scale-range-fields">
+                <div className="form-group">
+                  <label className="field-label">Min</label>
+                  <input
+                    className="text-input"
+                    type="number"
+                    value={newHabitScaleMin}
+                    onChange={e => setNewHabitScaleMin(e.target.value)}
+                  />
+                </div>
+                <div className="form-group">
+                  <label className="field-label">Max</label>
+                  <input
+                    className="text-input"
+                    type="number"
+                    value={newHabitScaleMax}
+                    onChange={e => setNewHabitScaleMax(e.target.value)}
+                  />
+                </div>
               </div>
             )}
-            <button style={{ padding: '0.5rem 1rem', borderRadius: '8px', backgroundColor: '#333', color: '#fff', fontWeight: 'bold' }} type="submit">Add Habit</button>
+
+            {newHabitType === 'checklist' && (
+              <>
+                <div className="form-group">
+                  <label className="field-label">Unit (Optional)</label>
+                  <input
+                    className="text-input"
+                    value={newHabitUnit}
+                    onChange={e => setNewHabitUnit(e.target.value)}
+                    placeholder="e.g. g, points"
+                  />
+                </div>
+                <div className="hint-box hint-box-protein">
+                  ✅ Add the items below. Each day you check off what applies and the app sums their values (e.g. a protein tracker made of foods and grams).
+                </div>
+              </>
+            )}
+
+            {newHabitType === 'choice' && (
+              <div className="hint-box hint-box-slate">
+                🔘 Add the options below. Each day you pick exactly one, e.g. "Workout type: Run / Lift / Rest".
+              </div>
+            )}
+
+            {OPTIONS_TYPES.includes(newHabitType) && (
+              <div className="form-group item-editor">
+                <label className="field-label">Items</label>
+                {newHabitItems.length > 0 && (
+                  <div className="item-editor-list">
+                    {newHabitItems.map((item, idx) => (
+                      <div key={idx} className="item-editor-row">
+                        <span>{item.label}{item.value != null ? ` — ${item.value}${newHabitUnit || ''}` : ''}</span>
+                        <button type="button" className="btn-danger" onClick={() => removePendingItem(idx)}>Remove</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="item-editor-add">
+                  <input
+                    className="text-input"
+                    value={newItemLabel}
+                    onChange={e => setNewItemLabel(e.target.value)}
+                    placeholder="Item name"
+                  />
+                  {newHabitType === 'checklist' && (
+                    <input
+                      className="text-input item-editor-value"
+                      type="number"
+                      value={newItemValue}
+                      onChange={e => setNewItemValue(e.target.value)}
+                      placeholder="Value"
+                    />
+                  )}
+                  <button type="button" className="btn" onClick={addPendingItem}>Add Item</button>
+                </div>
+              </div>
+            )}
+
+            {(newHabitType === 'boolean' || newHabitType === 'numeric' || newHabitType === 'duration' || newHabitType === 'checklist') && (
+              <div className="form-group">
+                <label className="field-label">{goalFieldLabel(newHabitType)}</label>
+                <input
+                  className="text-input"
+                  type="number"
+                  min={newHabitType === 'boolean' ? 1 : 0}
+                  max={newHabitType === 'boolean' ? 7 : undefined}
+                  value={newHabitGoal}
+                  onChange={e => setNewHabitGoal(e.target.value)}
+                  placeholder={newHabitType === 'boolean' ? 'e.g. 5' : 'e.g. 30'}
+                />
+              </div>
+            )}
+
+            {addHabitError && <div className="form-error">{addHabitError}</div>}
+            <button className="btn btn-primary" type="submit">Add Habit</button>
           </form>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          <div>
             {habits.map(habit => (
-              <div key={habit.id} className="modern-habit-item" style={{ opacity: habit.archived ? 0.5 : 1, flexDirection: 'column', alignItems: 'stretch' }}>
+              <div key={habit.id} className={`habit-row ${habit.archived ? 'archived' : ''}`}>
                 {editingHabitId === habit.id ? (
-                  <form onSubmit={handleUpdateHabit} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.5rem 0' }}>
-                    <input 
-                      value={editHabitName} 
-                      onChange={e => setEditHabitName(e.target.value)} 
-                      style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #aaa' }}
+                  <form onSubmit={handleUpdateHabit} className="habit-edit-form">
+                    <input
+                      className="text-input"
+                      value={editHabitName}
+                      onChange={e => setEditHabitName(e.target.value)}
                     />
-                    <select 
-                      value={editHabitCategoryId} 
+                    <select
+                      className="select-input"
+                      value={editHabitCategoryId}
                       onChange={e => setEditHabitCategoryId(e.target.value)}
-                      style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #aaa' }}
                     >
                       <option value="">Uncategorized</option>
                       {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
                     </select>
-                    <select 
-                      value={editHabitType} 
+                    <select
+                      className="select-input"
+                      value={editHabitType}
                       onChange={e => setEditHabitType(e.target.value)}
-                      style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #aaa' }}
                     >
                       <option value="boolean">Consistency (Done/Not done)</option>
                       <option value="duration">Duration</option>
                       <option value="numeric">Value (Number)</option>
-                      <option value="protein">Protein Tracker</option>
+                      <option value="scale">Scale / Rating</option>
+                      <option value="checklist">Checklist</option>
+                      <option value="choice">Single Choice</option>
                     </select>
-                    {(editHabitType === 'numeric' || editHabitType === 'duration') && (
-                      <input 
-                        value={editHabitUnit} 
-                        onChange={e => setEditHabitUnit(e.target.value)} 
+                    {(editHabitType === 'numeric' || editHabitType === 'duration' || editHabitType === 'checklist') && (
+                      <input
+                        className="text-input"
+                        value={editHabitUnit}
+                        onChange={e => setEditHabitUnit(e.target.value)}
                         placeholder={editHabitType === 'duration' ? 'mins' : 'unit'}
-                        style={{ padding: '0.4rem', borderRadius: '4px', border: '1px solid #aaa' }}
                       />
                     )}
-                    <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-                      <button type="submit" style={{ flex: 1, padding: '0.4rem', borderRadius: '4px', background: '#333', color: '#fff' }}>Save</button>
-                      <button type="button" onClick={() => setEditingHabitId(null)} style={{ flex: 1, padding: '0.4rem', borderRadius: '4px', background: '#ccc' }}>Cancel</button>
+                    {editHabitType === 'scale' && (
+                      <div className="scale-range-fields">
+                        <input
+                          className="text-input"
+                          type="number"
+                          value={editHabitScaleMin}
+                          onChange={e => setEditHabitScaleMin(e.target.value)}
+                          placeholder="Min"
+                        />
+                        <input
+                          className="text-input"
+                          type="number"
+                          value={editHabitScaleMax}
+                          onChange={e => setEditHabitScaleMax(e.target.value)}
+                          placeholder="Max"
+                        />
+                      </div>
+                    )}
+                    {OPTIONS_TYPES.includes(editHabitType) && (
+                      <div className="item-editor">
+                        <label className="field-label">Items</label>
+                        <div className="item-editor-list">
+                          {options.filter(o => o.habit_id === habit.id).map(opt => (
+                            <div key={opt.id} className="item-editor-row">
+                              <span>{opt.label}{opt.value != null ? ` — ${opt.value}${editHabitUnit || ''}` : ''}</span>
+                              <button type="button" className="btn-danger" onClick={() => deleteLiveItem(opt.id)}>Remove</button>
+                            </div>
+                          ))}
+                          {options.filter(o => o.habit_id === habit.id).length === 0 && (
+                            <p className="habit-row-meta">No items yet.</p>
+                          )}
+                        </div>
+                        <div className="item-editor-add">
+                          <input
+                            className="text-input"
+                            value={editItemLabel}
+                            onChange={e => setEditItemLabel(e.target.value)}
+                            placeholder="Item name"
+                          />
+                          {editHabitType === 'checklist' && (
+                            <input
+                              className="text-input item-editor-value"
+                              type="number"
+                              value={editItemValue}
+                              onChange={e => setEditItemValue(e.target.value)}
+                              placeholder="Value"
+                            />
+                          )}
+                          <button type="button" className="btn" onClick={() => addLiveItem(habit.id)}>Add Item</button>
+                        </div>
+                      </div>
+                    )}
+                    {(editHabitType === 'boolean' || editHabitType === 'numeric' || editHabitType === 'duration' || editHabitType === 'checklist') && (
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label className="field-label">{goalFieldLabel(editHabitType)}</label>
+                        <input
+                          className="text-input"
+                          type="number"
+                          min={editHabitType === 'boolean' ? 1 : 0}
+                          max={editHabitType === 'boolean' ? 7 : undefined}
+                          value={editHabitGoal}
+                          onChange={e => setEditHabitGoal(e.target.value)}
+                        />
+                      </div>
+                    )}
+                    {editHabitError && <div className="form-error">{editHabitError}</div>}
+                    <div className="habit-edit-actions">
+                      <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Save</button>
+                      <button type="button" className="btn" style={{ flex: 1 }} onClick={() => setEditingHabitId(null)}>Cancel</button>
                     </div>
                   </form>
                 ) : (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
+                  <div className="list-row">
                     <div>
-                      <div style={{ fontSize: '0.95rem' }}>{habit.name}</div>
-                      <div style={{ 
-                        fontSize: '0.75rem', 
-                        color: habit.type === 'protein' 
-                          ? 'var(--accent-protein)' 
-                          : (habit.type === 'duration' ? 'var(--accent-amber)' : '#666') 
-                      }}>
-                        {getTypeLabel(habit)}
+                      <div className="habit-row-name">{habit.name}</div>
+                      <div
+                        className="habit-row-meta"
+                        style={{ color: accentForType(habit.type) }}
+                      >
+                        {getTypeLabel(habit)}{getGoalLabel(habit) ? ` · ${getGoalLabel(habit)}` : ''}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      <button style={{ fontSize: '0.8rem', color: '#007bff' }} onClick={() => startEditingHabit(habit)}>
-                        Edit
-                      </button>
-                      <button style={{ fontSize: '0.8rem', color: '#555' }} onClick={() => handleArchiveHabit(habit.id, habit.archived)}>
+                    <div className="list-row-actions">
+                      <button className="btn-link" onClick={() => startEditingHabit(habit)}>Edit</button>
+                      <button className="btn-link" onClick={() => handleArchiveHabit(habit.id, habit.archived)}>
                         {habit.archived ? 'Unarchive' : 'Archive'}
                       </button>
                     </div>
@@ -325,6 +630,9 @@ export default function Manage() {
                 )}
               </div>
             ))}
+            {habits.length === 0 && (
+              <p className="habit-row-meta" style={{ padding: '0.5rem 0' }}>No habits yet. Add one above.</p>
+            )}
           </div>
         </div>
       </div>
